@@ -1,90 +1,122 @@
 // prisma/seed.js
 import { prisma } from "../src/lib/prisma.js";
+import { generateLessonData } from "../src/lib/gemini.js";
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function main() {
-  console.log("Resetting database for single-word MVP...");
+  console.log("Resetting database for 1-Word-per-Lesson architecture...");
 
-  // Clean up existing data for a fresh test
   await prisma.content.deleteMany();
   await prisma.lessonWord.deleteMany();
   await prisma.word.deleteMany();
   await prisma.lesson.deleteMany();
 
-  console.log("Seeding Lesson 1: Macabre...");
+  const targetWords = [
+    "macabre",
+    "ominous",
+    "sinister",
+    "desolate",
+    "malevolent",
+  ];
 
-  // 1. Create the Lesson
-  const lesson = await prisma.lesson.create({
-    data: {
-      lessonNumber: 1,
-      title: "The Atmospheric Edge",
-    },
-  });
+  for (let i = 0; i < targetWords.length; i++) {
+    const currentWord = targetWords[i];
+    const lessonNumber = i + 1;
+    console.log(
+      `\n[Lesson ${lessonNumber}] Generating content for "${currentWord}"...`,
+    );
 
-  // 2. Create the Word
-  const wordRecord = await prisma.word.create({
-    data: {
-      word: "macabre",
-      definition:
-        "Disturbing and horrifying because of involvement with or depiction of death and injury.",
-      partOfSpeech: "Adjective",
-      difficultyLevel: 3,
-    },
-  });
+    try {
+      // 1. Fetch AI Data
+      const aiData = await generateLessonData(currentWord);
 
-  // Link Word to Lesson
-  await prisma.lessonWord.create({
-    data: { lessonId: lesson.id, wordId: wordRecord.id },
-  });
+      if (!aiData) {
+        console.error(`Skipping "${currentWord}" due to API failure.`);
+        continue;
+      }
 
-  // 3. Inject the 6-Step Content
-  await prisma.content.createMany({
-    data: [
-      {
-        wordId: wordRecord.id,
-        contentType: "story_context",
-        textBody:
-          "The detective slowly pushed open the basement door, his flashlight cutting through the thick dust. What he found inside was a macabre display of antique dolls, each carefully positioned to mimic a famous historical execution.",
-      },
-      {
-        wordId: wordRecord.id,
-        contentType: "quiz_formal",
-        textBody:
-          "The director's latest film was heavily censored due to its _____ special effects, which the studio deemed too graphic for mainstream audiences.",
-        options: ["macabre", "uplifting", "mundane", "ephemeral"],
-        correctAnswer: "macabre",
-      },
-      {
-        wordId: wordRecord.id,
-        contentType: "quiz_casual",
-        textBody:
-          "I don't know why he's so obsessed with those midnight cemetery tours; the whole vibe is just too _____ for me.",
-        options: ["hilarious", "macabre", "soothing", "predictable"],
-        correctAnswer: "macabre",
-      },
-      {
-        wordId: wordRecord.id,
-        contentType: "quiz_synonym",
-        textBody: "Which of the following is closest in meaning to Macabre?",
-        options: ["Gruesome", "Cheerful", "Tedious", "Complicated"],
-        correctAnswer: "Gruesome",
-      },
-      {
-        wordId: wordRecord.id,
-        contentType: "quiz_true_false",
-        textBody:
-          "A brightly lit, bustling comedy club on a Saturday night is the perfect setting for a macabre scene.",
-        options: ["True", "False"],
-        correctAnswer: "False",
-      },
-    ],
-  });
+      // 2. Create the standalone Lesson
+      const lesson = await prisma.lesson.create({
+        data: {
+          lessonNumber: lessonNumber,
+          title: `Focus: ${currentWord.charAt(0).toUpperCase() + currentWord.slice(1)}`,
+        },
+      });
 
-  console.log("Seed completed successfully!");
+      // 3. Save the Word
+      const wordRecord = await prisma.word.create({
+        data: {
+          word: aiData.word.toLowerCase(),
+          definition: aiData.definition,
+          partOfSpeech: aiData.part_of_speech,
+          difficultyLevel: 3,
+        },
+      });
+
+      // 4. Link Word to Lesson
+      await prisma.lessonWord.create({
+        data: { lessonId: lesson.id, wordId: wordRecord.id },
+      });
+
+      // 5. Save the 6-Step Content
+      await prisma.content.createMany({
+        data: [
+          {
+            wordId: wordRecord.id,
+            contentType: "story_context",
+            textBody: aiData.story_context,
+          },
+          {
+            wordId: wordRecord.id,
+            contentType: "quiz_usage",
+            textBody: aiData.quiz_usage.question,
+            options: aiData.quiz_usage.options,
+            correctAnswer: aiData.quiz_usage.answer,
+          },
+          {
+            wordId: wordRecord.id,
+            contentType: "quiz_implication",
+            textBody: aiData.quiz_implication.question,
+            options: aiData.quiz_implication.options,
+            correctAnswer: aiData.quiz_implication.answer,
+          },
+          {
+            wordId: wordRecord.id,
+            contentType: "quiz_synonym",
+            textBody: aiData.quiz_synonym.question,
+            options: aiData.quiz_synonym.options,
+            correctAnswer: aiData.quiz_synonym.answer,
+          },
+          {
+            wordId: wordRecord.id,
+            contentType: "quiz_true_false",
+            textBody: aiData.quiz_true_false.question,
+            options: aiData.quiz_true_false.options,
+            correctAnswer: aiData.quiz_true_false.answer,
+          },
+        ],
+      });
+
+      console.log(
+        `Successfully created Lesson ${lessonNumber} for "${currentWord}".`,
+      );
+
+      // Rate Limit Buffer
+      if (i < targetWords.length - 1) {
+        await delay(3000);
+      }
+    } catch (error) {
+      console.error(`Failed processing word "${currentWord}":`, error);
+    }
+  }
+
+  console.log("\nAI Seed completed successfully!");
 }
 
 main()
   .catch((e) => {
-    console.error("Error during seeding:", e);
+    console.error("Fatal error during seeding:", e);
     process.exit(1);
   })
   .finally(async () => {
