@@ -1,108 +1,85 @@
 // prisma/seed.js
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-import csv from "csv-parser";
-import { prisma } from "../src/lib/prisma.js"; // Import the global Prisma client
-
-// Recreate __dirname for ES module environments
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { prisma } from "../src/lib/prisma.js";
 
 async function main() {
-  console.log("Starting MVP database seed...");
+  console.log("Resetting database for single-word MVP...");
 
-  // 1. Load the Dictionary
-  const dictPath = path.join(__dirname, "data", "dictionary.json");
-  const rawDict = fs.readFileSync(dictPath, "utf8");
-  const dictionary = JSON.parse(rawDict);
+  // Clean up existing data for a fresh test
+  await prisma.content.deleteMany();
+  await prisma.lessonWord.deleteMany();
+  await prisma.word.deleteMany();
+  await prisma.lesson.deleteMany();
 
-  // 2. Parse the Frequency List
-  const freqPath = path.join(__dirname, "data", "unigram_freq.csv");
-  const frequencyData = [];
+  console.log("Seeding Lesson 1: Macabre...");
 
-  console.log("Parsing word frequency data...");
-
-  await new Promise((resolve, reject) => {
-    fs.createReadStream(freqPath)
-      .pipe(csv())
-      .on("data", (row) => {
-        // Only keep words that exist in our dictionary to ensure we have definitions
-        const word = row.word?.toUpperCase();
-        if (word && dictionary[word]) {
-          frequencyData.push({
-            word: word.toLowerCase(),
-            count: parseInt(row.count, 10),
-            definition: dictionary[word],
-          });
-        }
-      })
-      .on("end", resolve)
-      .on("error", reject);
+  // 1. Create the Lesson
+  const lesson = await prisma.lesson.create({
+    data: {
+      lessonNumber: 1,
+      title: "The Atmospheric Edge",
+    },
   });
 
-  // Sort by frequency (highest count first)
-  frequencyData.sort((a, b) => b.count - a.count);
+  // 2. Create the Word
+  const wordRecord = await prisma.word.create({
+    data: {
+      word: "macabre",
+      definition:
+        "Disturbing and horrifying because of involvement with or depiction of death and injury.",
+      partOfSpeech: "Adjective",
+      difficultyLevel: 3,
+    },
+  });
 
-  // 3. Select 100 words for the MVP (Skipping the top 5,000 most common words)
-  const mvpWords = frequencyData.slice(5000, 5100);
+  // Link Word to Lesson
+  await prisma.lessonWord.create({
+    data: { lessonId: lesson.id, wordId: wordRecord.id },
+  });
 
-  // 4. Create Lessons and inject Words
-  let wordCounter = 0;
-
-  for (let i = 1; i <= 10; i++) {
-    const lesson = await prisma.lesson.create({
-      data: {
-        lessonNumber: i,
-        title: `Foundation Level ${i}`,
+  // 3. Inject the 6-Step Content
+  await prisma.content.createMany({
+    data: [
+      {
+        wordId: wordRecord.id,
+        contentType: "story_context",
+        textBody:
+          "The detective slowly pushed open the basement door, his flashlight cutting through the thick dust. What he found inside was a macabre display of antique dolls, each carefully positioned to mimic a famous historical execution.",
       },
-    });
+      {
+        wordId: wordRecord.id,
+        contentType: "quiz_formal",
+        textBody:
+          "The director's latest film was heavily censored due to its _____ special effects, which the studio deemed too graphic for mainstream audiences.",
+        options: ["macabre", "uplifting", "mundane", "ephemeral"],
+        correctAnswer: "macabre",
+      },
+      {
+        wordId: wordRecord.id,
+        contentType: "quiz_casual",
+        textBody:
+          "I don't know why he's so obsessed with those midnight cemetery tours; the whole vibe is just too _____ for me.",
+        options: ["hilarious", "macabre", "soothing", "predictable"],
+        correctAnswer: "macabre",
+      },
+      {
+        wordId: wordRecord.id,
+        contentType: "quiz_synonym",
+        textBody: "Which of the following is closest in meaning to Macabre?",
+        options: ["Gruesome", "Cheerful", "Tedious", "Complicated"],
+        correctAnswer: "Gruesome",
+      },
+      {
+        wordId: wordRecord.id,
+        contentType: "quiz_true_false",
+        textBody:
+          "A brightly lit, bustling comedy club on a Saturday night is the perfect setting for a macabre scene.",
+        options: ["True", "False"],
+        correctAnswer: "False",
+      },
+    ],
+  });
 
-    console.log(`Created Lesson ${i}`);
-
-    // Take 10 words for this lesson
-    const lessonWords = mvpWords.slice(wordCounter, wordCounter + 10);
-
-    for (const item of lessonWords) {
-      // Create the Word
-      const wordRecord = await prisma.word.create({
-        data: {
-          word: item.word,
-          definition: item.definition,
-          difficultyLevel: 2,
-        },
-      });
-
-      // Link Word to Lesson
-      await prisma.lessonWord.create({
-        data: {
-          lessonId: lesson.id,
-          wordId: wordRecord.id,
-        },
-      });
-
-      // Generate Placeholder Content
-      await prisma.content.createMany({
-        data: [
-          {
-            wordId: wordRecord.id,
-            contentType: "example_formal",
-            textBody: `The board of directors noted the ${item.word} nature of the report.`,
-          },
-          {
-            wordId: wordRecord.id,
-            contentType: "quiz_fill_blank",
-            textBody: `Despite the challenges, her approach was incredibly _____.`,
-            options: [item.word, "apple", "car", "blue"],
-            correctAnswer: item.word,
-          },
-        ],
-      });
-    }
-    wordCounter += 10;
-  }
-
-  console.log("MVP Seed completed successfully!");
+  console.log("Seed completed successfully!");
 }
 
 main()
