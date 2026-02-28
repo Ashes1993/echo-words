@@ -1,65 +1,145 @@
-// prisma/seed.js
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import csv from "csv-parser";
 import { prisma } from "../src/lib/prisma.js";
 import { generateLessonData } from "../src/lib/gemini.js";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function main() {
-  console.log("Resetting database for 1-Word-per-Lesson architecture...");
+  console.log("Starting Production Resumable Seeder...");
 
-  await prisma.content.deleteMany();
-  await prisma.lessonWord.deleteMany();
-  await prisma.word.deleteMany();
-  await prisma.lesson.deleteMany();
+  // 1. Load the Dictionary
+  const dictPath = path.join(__dirname, "data", "dictionary.json");
+  const rawDict = fs.readFileSync(dictPath, "utf8");
+  const dictionary = JSON.parse(rawDict);
 
-  const targetWords = [
-    "macabre",
-    "ominous",
-    "sinister",
-    "desolate",
-    "malevolent",
-  ];
+  // 2. Parse the CSV Frequency Data
+  const freqPath = path.join(__dirname, "data", "unigram_freq.csv");
+  const frequencyData = [];
 
-  for (let i = 0; i < targetWords.length; i++) {
-    const currentWord = targetWords[i];
-    const lessonNumber = i + 1;
+  console.log("Parsing word frequency data...");
+  await new Promise((resolve, reject) => {
+    fs.createReadStream(freqPath)
+      .pipe(csv())
+      .on("data", (row) => {
+        const word = row.word?.toLowerCase();
+        // Ensure the word exists in our dictionary so Gemini has a baseline
+        if (word && dictionary[word.toUpperCase()]) {
+          frequencyData.push({ word, count: parseInt(row.count, 10) });
+        }
+      })
+      .on("end", resolve)
+      .on("error", reject);
+  });
+
+  // Sort by frequency (highest count first)
+  frequencyData.sort((a, b) => b.count - a.count);
+
+  // Skip the top 2,000 words to hit "medium" difficulty, then grab the next chunk
+  const targetWords = frequencyData.slice(2000, 10000).map((item) => item.word);
+
+  // 3. Database State Verification (Resumability)
+  const existingWordsRaw = await prisma.word.findMany({
+    select: { word: true },
+  });
+  const existingWords = new Set(existingWordsRaw.map((w) => w.word));
+
+  const maxLesson = await prisma.lesson.findFirst({
+    orderBy: { lessonNumber: "desc" },
+  });
+  let nextLessonNumber = maxLesson ? maxLesson.lessonNumber + 1 : 1;
+
+  console.log(`Found ${existingWords.size} words already seeded.`);
+  console.log(`Resuming generation from Lesson ${nextLessonNumber}...\n`);
+
+  // 4. The Smart Loop
+  for (const currentWord of targetWords) {
+    // Instantly skip if the word is already in the database
+    if (existingWords.has(currentWord)) {
+      continue;
+    }
+
+    // --- BOSS LEVEL INJECTOR ---
+    // If we hit a multiple of 10, create a Boss Level without hitting the AI API
+    if (nextLessonNumber % 10 === 0) {
+      console.log(
+        `[Lesson ${nextLessonNumber}] Creating Boss Level (Milestone Review)...`,
+      );
+
+      const bossLesson = await prisma.lesson.create({
+        data: {
+          lessonNumber: nextLessonNumber,
+          title: `Milestone Review ${nextLessonNumber / 10}`,
+        },
+      });
+
+      // Fetch the last 9 lessons and link their words to this boss level
+      const lastNineLessons = await prisma.lesson.findMany({
+        where: {
+          lessonNumber: {
+            gte: nextLessonNumber - 9,
+            lt: nextLessonNumber,
+          },
+        },
+        include: { words: true },
+      });
+
+      const bossLinks = [];
+      for (const l of lastNineLessons) {
+        for (const w of l.words) {
+          bossLinks.push({ lessonId: bossLesson.id, wordId: w.wordId });
+        }
+      }
+
+      if (bossLinks.length > 0) {
+        await prisma.lessonWord.createMany({ data: bossLinks });
+      }
+
+      nextLessonNumber++;
+    }
+    // --- END BOSS LEVEL INJECTOR ---
+
+    // Process the normal word lesson
     console.log(
-      `\n[Lesson ${lessonNumber}] Generating content for "${currentWord}"...`,
+      `[Lesson ${nextLessonNumber}] Generating content for "${currentWord}"...`,
     );
 
     try {
-      // 1. Fetch AI Data
       const aiData = await generateLessonData(currentWord);
 
       if (!aiData) {
-        console.error(`Skipping "${currentWord}" due to API failure.`);
-        continue;
+        console.error(`Skipping "${currentWord}" due to AI API failure.`);
+        continue; // Move to the next word, do not increment lesson number
       }
 
-      // 2. Create the standalone Lesson
+      // 1. Create Lesson
       const lesson = await prisma.lesson.create({
         data: {
-          lessonNumber: lessonNumber,
+          lessonNumber: nextLessonNumber,
           title: `Focus: ${currentWord.charAt(0).toUpperCase() + currentWord.slice(1)}`,
         },
       });
 
-      // 3. Save the Word
+      // 2. Create Word
       const wordRecord = await prisma.word.create({
         data: {
           word: aiData.word.toLowerCase(),
           definition: aiData.definition,
           partOfSpeech: aiData.part_of_speech,
-          difficultyLevel: 3,
+          difficultyLevel: 2, // Tagged as Medium
         },
       });
 
-      // 4. Link Word to Lesson
+      // 3. Link Word to Lesson
       await prisma.lessonWord.create({
         data: { lessonId: lesson.id, wordId: wordRecord.id },
       });
 
-      // 5. Save the 6-Step Content
+      // 4. Create Content
       await prisma.content.createMany({
         data: [
           {
@@ -98,20 +178,25 @@ async function main() {
         ],
       });
 
+      // Add to our local cache so we don't process it again if the CSV has duplicates
+      existingWords.add(currentWord);
       console.log(
-        `Successfully created Lesson ${lessonNumber} for "${currentWord}".`,
+        `Successfully saved Lesson ${nextLessonNumber} for "${currentWord}".`,
       );
 
-      // Rate Limit Buffer
-      if (i < targetWords.length - 1) {
-        await delay(3000);
-      }
+      nextLessonNumber++;
+
+      // Delay to respect Gemini API rate limits
+      await delay(3000);
     } catch (error) {
-      console.error(`Failed processing word "${currentWord}":`, error);
+      console.error(
+        `🚨 Failed processing word "${currentWord}":`,
+        error.message,
+      );
     }
   }
 
-  console.log("\nAI Seed completed successfully!");
+  console.log("\nProduction Seed completed successfully!");
 }
 
 main()
