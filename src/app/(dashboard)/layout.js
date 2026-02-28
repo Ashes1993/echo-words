@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { Home, Gamepad2, User, BookOpen } from "lucide-react";
+import Header from "../../components/layout/Header.js";
 
 export const metadata = {
-  title: "EchoWords | Dashboard",
+  title: "Retain | Dashboard",
   description: "Track your vocabulary progression and daily streaks.",
 };
 
@@ -10,7 +11,7 @@ export default function DashboardLayout({ children }) {
   const navItems = [
     { name: "Overview", href: "/overview", icon: Home },
     { name: "Play", href: "/play", icon: Gamepad2 },
-    { name: "Store", href: "#", icon: BookOpen, disabled: true }, // Placeholder for later
+    { name: "Store", href: "#", icon: BookOpen, disabled: true },
     { name: "Profile", href: "/profile", icon: User },
   ];
 
@@ -46,9 +47,15 @@ export default function DashboardLayout({ children }) {
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 h-full overflow-y-auto no-scrollbar pb-20 md:pb-0 relative">
-        <div className="max-w-4xl mx-auto p-4 md:p-8 animate-fade-in">
-          {children}
+      <main className="flex-1 flex flex-col h-full overflow-hidden relative">
+        {/* The Dynamic Header */}
+        <Header />
+
+        {/* Scrollable Page Content */}
+        <div className="flex-1 overflow-y-auto no-scrollbar pb-20 md:pb-0">
+          <div className="max-w-4xl mx-auto p-4 md:p-8 animate-fade-in">
+            {children}
+          </div>
         </div>
       </main>
 
